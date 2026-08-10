@@ -75,10 +75,12 @@ class SharedGaussians(nn.Module):
         self.scales = torch.zeros((num_points, 3)).float().cuda()
         self.z_values = torch.zeros((num_points)).float().cuda()
         self.trackable_filter = torch.zeros((num_points)).long().cuda()
+        self.stability = torch.zeros((num_points)).float().cuda()
+        self.gmm_unary = torch.zeros((num_points)).float().cuda()
         self.using_idx = torch.zeros((1)).int().cuda()
         self.filter_size = torch.zeros((1)).int().cuda()
 
-    def input_values(self, new_xyz, new_colors, new_rots, new_scales, new_z_values, new_trackable_filter):
+    def input_values(self, new_xyz, new_colors, new_rots, new_scales, new_z_values, new_trackable_filter, new_stability=None, new_gmm_unary=None):
         # on CPU memory
         self.using_idx[0] = new_xyz.shape[0]
         self.xyz[:self.using_idx[0],:] = new_xyz
@@ -86,6 +88,12 @@ class SharedGaussians(nn.Module):
         self.rots[:self.using_idx[0],:] = new_rots
         self.scales[:self.using_idx[0],:] = new_scales
         self.z_values[:self.using_idx[0]] = new_z_values
+             
+        if new_stability is not None:
+             self.stability[:self.using_idx[0]] = new_stability
+             
+        if new_gmm_unary is not None:
+             self.gmm_unary[:self.using_idx[0]] = new_gmm_unary
         
         self.filter_size[0] = new_trackable_filter.shape[0]
         self.trackable_filter[:self.filter_size[0]] = new_trackable_filter
@@ -96,7 +104,9 @@ class SharedGaussians(nn.Module):
                 copy.deepcopy(self.rots[:self.using_idx[0],:]),\
                 copy.deepcopy(self.scales[:self.using_idx[0],:]),\
                 copy.deepcopy(self.z_values[:self.using_idx[0]]),\
-                copy.deepcopy(self.trackable_filter[:self.filter_size[0]])
+                copy.deepcopy(self.trackable_filter[:self.filter_size[0]]),\
+                copy.deepcopy(self.stability[:self.using_idx[0]]),\
+                copy.deepcopy(self.gmm_unary[:self.using_idx[0]])
 
 class SharedTargetPoints(nn.Module):
     def __init__(self, num_points):
@@ -105,25 +115,43 @@ class SharedTargetPoints(nn.Module):
         self.xyz = torch.zeros((num_points, 3)).float()
         self.rots = torch.zeros((num_points, 4)).float()
         self.scales = torch.zeros((num_points, 3)).float()
+        self.colors = torch.zeros((num_points, 3)).float()
+        self.opacities = torch.zeros((num_points, 1)).float()
+        self.stability = torch.zeros((num_points)).float()
+        self.gmm_unary = torch.zeros((num_points)).float()
         self.using_idx = torch.zeros((1)).int()
 
-    def input_values(self, new_xyz, new_rots, new_scales):
+    def input_values(self, new_xyz, new_rots, new_scales, new_colors, new_opacities, new_stability=None, new_gmm_unary=None):
         self.using_idx[0] = new_xyz.shape[0]
         if self.using_idx[0]>self.num_points:
             print("Too many target points")
         self.xyz[:self.using_idx[0],:] = new_xyz
         self.rots[:self.using_idx[0],:] = new_rots
         self.scales[:self.using_idx[0],:] = new_scales
+        self.colors[:self.using_idx[0],:] = new_colors
+        self.opacities[:self.using_idx[0],:] = new_opacities
+        if new_stability is not None:
+             self.stability[:self.using_idx[0]] = new_stability
+        if new_gmm_unary is not None:
+             self.gmm_unary[:self.using_idx[0]] = new_gmm_unary
     
     def get_values_tensor(self):
         return  copy.deepcopy(self.xyz[:self.using_idx[0],:]),\
                 copy.deepcopy(self.rots[:self.using_idx[0],:]),\
-                copy.deepcopy(self.scales[:self.using_idx[0],:])
+                copy.deepcopy(self.scales[:self.using_idx[0],:]),\
+                copy.deepcopy(self.colors[:self.using_idx[0],:]),\
+                copy.deepcopy(self.opacities[:self.using_idx[0],:]),\
+                copy.deepcopy(self.stability[:self.using_idx[0]]),\
+                copy.deepcopy(self.gmm_unary[:self.using_idx[0]])
 
     def get_values_np(self):
         return  copy.deepcopy(self.xyz[:self.using_idx[0],:].numpy()),\
                 copy.deepcopy(self.rots[:self.using_idx[0],:].numpy()),\
-                copy.deepcopy(self.scales[:self.using_idx[0],:].numpy())
+                copy.deepcopy(self.scales[:self.using_idx[0],:].numpy()),\
+                copy.deepcopy(self.colors[:self.using_idx[0],:].numpy()),\
+                copy.deepcopy(self.opacities[:self.using_idx[0],:].numpy()),\
+                copy.deepcopy(self.stability[:self.using_idx[0]].numpy()),\
+                copy.deepcopy(self.gmm_unary[:self.using_idx[0]].numpy())
 
 class SharedCam(nn.Module):
     def __init__(self, FoVx, FoVy, image, depth_image,
@@ -188,6 +216,17 @@ class SharedCam(nn.Module):
         
         self.original_image = self.original_image.cuda()
         self.original_depth_image = self.original_depth_image.cuda()
+        
+        self.R = self.R.cuda()
+        self.t = self.t.cuda()
+        
+        self.fx = self.fx.cuda()
+        self.fy = self.fy.cuda()
+        self.cx = self.cx.cuda()
+        self.cy = self.cy.cuda()
+        
+        self.image_width = self.image_width.cuda()
+        self.image_height = self.image_height.cuda()
         
 
 

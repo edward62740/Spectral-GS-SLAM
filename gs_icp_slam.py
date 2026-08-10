@@ -44,6 +44,7 @@ class GS_ICP_SLAM(SLAMParameters):
         self.test = args.test
         self.save_results = args.save_results
         self.rerun_viewer = args.rerun_viewer
+        self.use_fusion = args.use_fusion
         
         if self.rerun_viewer:
             rr.init("3dgsviewer")
@@ -140,7 +141,7 @@ class GS_ICP_SLAM(SLAMParameters):
             depth_image_name = f"depth{image_name[5:]}"
             rgb_image = cv2.imread(f"{self.dataset_path}/images/{image_name}.jpg")
             depth_image = np.array(o3d.io.read_image(f"{self.dataset_path}/depth_images/{depth_image_name}.png")).astype(np.float32)
-        elif self.camera_parameters[8] == "tum":
+        elif self.camera_parameters[8] == "tum" or self.camera_parameters[8] == "bonn":
             rgb_folder = os.path.join(self.dataset_path, "rgb")
             depth_folder = os.path.join(self.dataset_path, "depth")
             rgb_file = os.listdir(rgb_folder)[0]
@@ -244,6 +245,7 @@ if __name__ == "__main__":
     parser.add_argument("--test", default=None)
     parser.add_argument("--save_results", action='store_true', default=None)
     parser.add_argument("--rerun_viewer", action="store_true", default=False)
+    parser.add_argument("--use_fusion", action="store_true", default=False)
     args = parser.parse_args()
 
     gs_icp_slam = GS_ICP_SLAM(args)

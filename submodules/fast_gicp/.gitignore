@@ -1,0 +1,13 @@
+.ipynb_checkpoints/
+.vscode/*
+build/*
+dist/*
+
+# Only needed for BUILD_VGICP_CUDA, which this fork does not enable.
+# Eigen3/pybind11 are resolved via find_package instead.
+thirdparty/
+
+*.so
+*.py[cod]
+*.egg-info
+README.html

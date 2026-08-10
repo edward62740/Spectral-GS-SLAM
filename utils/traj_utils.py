@@ -20,6 +20,8 @@ class TrajManager:
             self.gt_poses = self.tum_load_poses(self.dataset_path + '/traj.txt')
         elif self.which_dataset == "replica":
             self.gt_poses = self.replica_load_poses(self.dataset_path + '/traj.txt')
+        elif self.which_dataset == "bonn":
+             self.gt_poses = self.bonn_load_poses(self.dataset_path + '/groundtruth.txt') # usually groundtruth.txt for bonn
         else:
             print("Unknown dataset!")
             sys.exit()
@@ -157,5 +159,54 @@ class TrajManager:
     def eval_traj(self):
         pass
 
-if __name__ =="__main__":
-    a = TrajManager("scannetpp", "/home/kdg/GS_ICP_SLAM/src/dataset/Scannetpp/8b5caf3398/transforms_undistorted.json")
+    def save_traj(self, poses, save_path):
+        '''
+        Save trajectory plot
+        
+        poses : list of estimated poses
+        save_path : path to save the plot
+        '''
+        traj = np.array([x[:3, 3] for x in poses])
+        
+        fig, axes = pyplot.subplots(1, 2, figsize=(12, 6))
+        
+        # Plot 1: X-Z (Standard Camera Top View)
+        axes[0].set_title('Top View (X-Z)')
+        axes[0].plot(traj[:, 0], traj[:, 2], label='Estimated', linewidth=2)
+        if self.gt_poses is not None:
+             # Align GT to estimated start if needed, or just plot raw. 
+             # Usually we want to align them or they are already aligned.
+             # For visualization, let's assume they are roughly aligned or user just wants to see shape.
+             axes[0].plot(self.gt_poses_vis[:, 0], self.gt_poses_vis[:, 2], label='GT', linestyle='--')
+        axes[0].set_xlabel('X (m)')
+        axes[0].set_ylabel('Z (m)')
+        axes[0].legend()
+        axes[0].axis('equal')
+        axes[0].grid(True)
+
+        # Plot 2: X-Y (Standard Z-up Top View)
+        axes[1].set_title('Top View (X-Y)')
+        axes[1].plot(traj[:, 0], traj[:, 1], label='Estimated', linewidth=2)
+        if self.gt_poses is not None:
+             axes[1].plot(self.gt_poses_vis[:, 0], self.gt_poses_vis[:, 1], label='GT', linestyle='--')
+        axes[1].set_xlabel('X (m)')
+        axes[1].set_ylabel('Y (m)')
+        axes[1].legend()
+        axes[1].axis('equal')
+        axes[1].grid(True)
+        
+        pyplot.tight_layout()
+        pyplot.savefig(save_path)
+        pyplot.close()
+
+    def bonn_load_poses(self, path):
+        # Load using standard TUM format first
+        if not os.path.exists(path):
+             # Try finding it in standard locations if explicit path fails or is default
+             if os.path.isfile(os.path.join(self.dataset_path, 'groundtruth.txt')):
+                path = os.path.join(self.dataset_path, 'groundtruth.txt')
+        
+
+        poses_raw = self.tum_load_poses(path)
+
+        return np.array(poses_raw)

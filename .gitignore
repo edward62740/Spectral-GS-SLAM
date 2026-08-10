@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+experiments/
+output/
+.vscode/
+*.egg-info/
+submodules/*/build/
+submodules/fast_gicp/thirdparty/

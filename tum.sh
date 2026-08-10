@@ -1,5 +1,5 @@
-OUTPUT_PATH="experiments/results"
-DATASET_PATH="dataset/TUM"
+OUTPUT_PATH="${OUTPUT_PATH:-experiments/results}"
+DATASET_PATH="${DATASET_PATH:?set DATASET_PATH to the directory containing rgbd_dataset_freiburg1_desk/, ...}"
 
 str_pad() {
 
@@ -53,7 +53,7 @@ run_()
     local downsample_rate=${10}
     
     echo "run $dataset"
-    python -W ignore gs_icp_slam.py --dataset_path $DATASET_PATH/$dataset\
+    python3 -W ignore gs_icp_slam.py  --dataset_path $DATASET_PATH/$dataset\
                                     --config $config\
                                     --output_path $OUTPUT_PATH\
                                     --keyframe_th $keyframe_th\
@@ -63,7 +63,11 @@ run_()
                                     --trackable_opacity_th $trackable_opacity_th\
                                     --overlapped_th2 $overlapped_th2\
                                     --downsample_rate $downsample_rate\
-                                    --save_results
+                                    --save_results\
+                                    --verbose\
+                                    --use_fusion
+                                    
+
     wait
 }
 
@@ -78,9 +82,35 @@ run_tum()
     local overlapped_th2=$7
     local downsample_rate=$8
 
-    run_ "rgbd_dataset_freiburg1_desk" "configs/TUM/rgbd_dataset_freiburg1_desk.txt" $result_txt $keyframe_th $knn_maxd $overlapped_th $max_correspondence_distance $trackable_opacity_th $overlapped_th2 $downsample_rate
-    run_ "rgbd_dataset_freiburg2_xyz" "configs/TUM/rgbd_dataset_freiburg2_xyz.txt" $result_txt $keyframe_th $knn_maxd $overlapped_th $max_correspondence_distance $trackable_opacity_th $overlapped_th2 $downsample_rate
-    run_ "rgbd_dataset_freiburg3_long_office_household" "configs/TUM/rgbd_dataset_freiburg3_long_office_household.txt" $result_txt $keyframe_th $knn_maxd $overlapped_th $max_correspondence_distance $trackable_opacity_th $overlapped_th2 $downsample_rate
+    # same intrinsic params for all
+    #run_ "rgbd_dataset_freiburg1_desk" "configs/TUM/rgbd_dataset_freiburg1_desk.txt" $result_txt $keyframe_th $knn_maxd $overlapped_th $max_correspondence_distance $trackable_opacity_th $overlapped_th2 $downsample_rate
+    #run_ "rgbd_dataset_freiburg1_room" "configs/TUM/rgbd_dataset_freiburg1_desk.txt" $result_txt $keyframe_th $knn_maxd $overlapped_th $max_correspondence_distance $trackable_opacity_th $overlapped_th2 $downsample_rate 
+    #run_ "rgbd_dataset_freiburg1_xyz" "configs/TUM/rgbd_dataset_freiburg1_desk.txt" $result_txt $keyframe_th $knn_maxd $overlapped_th $max_correspondence_distance $trackable_opacity_th $overlapped_th2 $downsample_rate
+    #run_ "rgbd_dataset_freiburg2_desk" "configs/TUM/rgbd_dataset_freiburg1_desk.txt" $result_txt $keyframe_th $knn_maxd $overlapped_th $max_correspondence_distance $trackable_opacity_th $overlapped_th2 $downsample_rate
+    #run_ "rgbd_dataset_freiburg2_desk2" "configs/TUM/rgbd_dataset_freiburg1_desk.txt" $result_txt $keyframe_th $knn_maxd $overlapped_th $max_correspondence_distance $trackable_opacity_th $overlapped_th2 $downsample_rate
+    #run_ "rgbd_dataset_freiburg2_large_no_loop" "configs/TUM/rgbd_dataset_freiburg2_large_no_loop.txt" $result_txt $keyframe_th $knn_maxd $overlapped_th $max_correspondence_distance $trackable_opacity_th $overlapped_th2 $downsample_rate
+    #run_ "rgbd_dataset_freiburg2_xyz" "configs/TUM/rgbd_dataset_freiburg2_xyz.txt" $result_txt $keyframe_th $knn_maxd $overlapped_th $max_correspondence_distance $trackable_opacity_th $overlapped_th2 $downsample_rate
+    #run_ "rgbd_dataset_freiburg3_long_office_household" "configs/TUM/rgbd_dataset_freiburg3_long_office_household.txt" $result_txt $keyframe_th $knn_maxd $overlapped_th $max_correspondence_distance $trackable_opacity_th $overlapped_th2 $downsample_rate
+    #run_ "rgbd_dataset_freiburg3_walking_static" "configs/TUM/rgbd_dataset_freiburg3_long_office_household.txt" $result_txt $keyframe_th $knn_maxd $overlapped_th $max_correspondence_distance $trackable_opacity_th $overlapped_th2 $downsample_rate
+    #run_ "rgbd_dataset_freiburg3_sitting_rpy" "configs/TUM/rgbd_dataset_freiburg3_long_office_household.txt" $result_txt $keyframe_th $knn_maxd $overlapped_th $max_correspondence_distance $trackable_opacity_th $overlapped_th2 $downsample_rate
+    #run_ "rgbd_dataset_freiburg3_walking_rpy" "configs/TUM/rgbd_dataset_freiburg3_long_office_household.txt" $result_txt $keyframe_th $knn_maxd $overlapped_th $max_correspondence_distance $trackable_opacity_th $overlapped_th2 $downsample_rate
+    #run_ "rgbd_dataset_freiburg3_walking_halfsphere" "configs/TUM/rgbd_dataset_freiburg3_long_office_household.txt" $result_txt $keyframe_th $knn_maxd $overlapped_th $max_correspondence_distance $trackable_opacity_th $overlapped_th2 $downsample_rate
+    #run_ "rgbd_dataset_freiburg3_walking_xyz" "configs/TUM/rgbd_dataset_freiburg3_long_office_household.txt" $result_txt $keyframe_th $knn_maxd $overlapped_th $max_correspondence_distance $trackable_opacity_th $overlapped_th2 $downsample_rate
+    #run_ "rgbd_dataset_freiburg3_nostructure_notexture_far" "configs/TUM/rgbd_dataset_freiburg3_long_office_household.txt" $result_txt $keyframe_th $knn_maxd $overlapped_th $max_correspondence_distance $trackable_opacity_th $overlapped_th2 $downsample_rate
+    #run_ "rgbd_dataset_freiburg3_nostructure_notexture_near_withloop" "configs/TUM/rgbd_dataset_freiburg3_long_office_household.txt" $result_txt $keyframe_th $knn_maxd $overlapped_th $max_correspondence_distance $trackable_opacity_th $overlapped_th2 $downsample_rate
+    #run_ "rgbd_dataset_freiburg3_structure_notexture_near" "configs/TUM/rgbd_dataset_freiburg3_long_office_household.txt" $result_txt $keyframe_th $knn_maxd $overlapped_th $max_correspondence_distance $trackable_opacity_th $overlapped_th2 $downsample_rate
+    #run_ "rgbd_dataset_freiburg3_structure_notexture_far" "configs/TUM/rgbd_dataset_freiburg3_long_office_household.txt" $result_txt $keyframe_th $knn_maxd $overlapped_th $max_correspondence_distance $trackable_opacity_th $overlapped_th2 $downsample_rate
+    #run_ "rgbd_dataset_freiburg3_structure_notexture_near_validation" "configs/TUM/rgbd_dataset_freiburg3_long_office_household.txt" $result_txt $keyframe_th $knn_maxd $overlapped_th $max_correspondence_distance $trackable_opacity_th $overlapped_th2 $downsample_rate
+    #run_ "rgbd_dataset_freiburg3_structure_notexture_far_validation" "configs/TUM/rgbd_dataset_freiburg3_long_office_household.txt" $result_txt $keyframe_th $knn_maxd $overlapped_th $max_correspondence_distance $trackable_opacity_th $overlapped_th2 $downsample_rate
+
+    #run_ "rgbd_dataset_freiburg3_nostructure_texture_near_withloop" "configs/TUM/rgbd_dataset_freiburg3_long_office_household.txt" $result_txt $keyframe_th $knn_maxd $overlapped_th $max_correspondence_distance $trackable_opacity_th $overlapped_th2 $downsample_rate
+    run_ "rgbd_dataset_freiburg3_nostructure_texture_far" "configs/TUM/rgbd_dataset_freiburg3_long_office_household.txt" $result_txt $keyframe_th $knn_maxd $overlapped_th $max_correspondence_distance $trackable_opacity_th $overlapped_th2 $downsample_rate
+    #run_ "rgbd_dataset_freiburg3_nostructure_texture_far_validation" "configs/TUM/rgbd_dataset_freiburg3_long_office_household.txt" $result_txt $keyframe_th $knn_maxd $overlapped_th $max_correspondence_distance $trackable_opacity_th $overlapped_th2 $downsample_rate
+    #run_ "rgbd_dataset_freiburg3_nostructure_texture_near_withloop_validation" "configs/TUM/rgbd_dataset_freiburg3_long_office_household.txt" $result_txt $keyframe_th $knn_maxd $overlapped_th $max_correspondence_distance $trackable_opacity_th $overlapped_th2 $downsample_rate
+    #run_ "rgbd_dataset_freiburg3_large_cabinet" "configs/TUM/rgbd_dataset_freiburg3_long_office_household.txt" $result_txt $keyframe_th $knn_maxd $overlapped_th $max_correspondence_distance $trackable_opacity_th $overlapped_th2 $downsample_rate
+  
+    #run_ "rgbd_dataset_freiburg3_sitting_static" "configs/TUM/rgbd_dataset_freiburg3_long_office_household.txt" $result_txt $keyframe_th $knn_maxd $overlapped_th $max_correspondence_distance $trackable_opacity_th $overlapped_th2 $downsample_rate
+    #run_ "rgbd_dataset_freiburg3_sitting_xyz" "configs/TUM/rgbd_dataset_freiburg3_long_office_household.txt" $result_txt $keyframe_th $knn_maxd $overlapped_th $max_correspondence_distance $trackable_opacity_th $overlapped_th2 $downsample_rate
 }
 
 run_replica()
@@ -133,7 +163,7 @@ str_pad 15 " " left <<< "LPIPS" >> $txt_file
 echo "" >> $txt_file
 
 overlapped_th=1e-3
-max_correspondence_distance=0.03
+max_correspondence_distance=0.05
 knn_maxd=99999.0
 
 trackable_opacity_th=0.09

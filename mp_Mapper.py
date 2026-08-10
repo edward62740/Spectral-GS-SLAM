@@ -6,6 +6,7 @@ import copy
 import random
 import sys
 import cv2
+import math
 import numpy as np
 import time
 import rerun as rr
@@ -13,10 +14,12 @@ sys.path.append(os.path.dirname(__file__))
 from arguments import SLAMParameters
 from utils.traj_utils import TrajManager
 from utils.loss_utils import l1_loss, ssim
+from utils.graphics_utils import focal2fov, getProjectionMatrix
 from scene import GaussianModel
 from gaussian_renderer import render, render_3, network_gui
 from tqdm import tqdm
 from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
+
 import open3d as o3d
 import matplotlib.pyplot as plt
 
@@ -106,18 +109,23 @@ class Mapper(SLAMParameters):
         self.final_pose = slam.final_pose
         self.demo = slam.demo
         self.is_mapping_process_started = slam.is_mapping_process_started
-    
+        self.iter_shared = slam.iter_shared
+
     def run(self):
         self.mapping()
     
     def mapping(self):
         t = torch.zeros((1,1)).float().cuda()
+        self.train_iter = 0
         if self.verbose:
-            network_gui.init("127.0.0.1", 6009)
+            try:
+                network_gui.init("127.0.0.1", 6009)
+            except OSError as e:
+                print(f"[Mapper] Failed to initialize network GUI: {e}")
         
         if self.rerun_viewer:
             rr.init("3dgsviewer")
-            rr.connect()
+            rr.connect_grpc()
         
         # Mapping Process is ready to receive first frame
         self.is_mapping_process_started[0] = 1
@@ -128,17 +136,18 @@ class Mapper(SLAMParameters):
             
         self.total_start_time_viewer = time.time()
         
-        points, colors, rots, scales, z_values, trackable_filter = self.shared_new_gaussians.get_values()
+        points, colors, rots, scales, z_values, trackable_filter, _, _ = self.shared_new_gaussians.get_values()
         self.gaussians.create_from_pcd2_tensor(points, colors, rots, scales, z_values, trackable_filter)
         self.gaussians.spatial_lr_scale = self.scene_extent
         self.gaussians.training_setup(self)
         self.gaussians.update_learning_rate(1)
         self.gaussians.active_sh_degree = self.gaussians.max_sh_degree
         self.is_tracking_keyframe_shared[0] = 0
+
         
         if self.demo[0]:
             a = time.time()
-            while (time.time()-a)<30.:
+            while (time.time()-a)<60.:
                 print(30.-(time.time()-a))
                 self.run_viewer()
         self.demo[0] = 0
@@ -160,14 +169,16 @@ class Mapper(SLAMParameters):
             
             if self.is_tracking_keyframe_shared[0]:
                 # get shared gaussians
-                points, colors, rots, scales, z_values, trackable_filter = self.shared_new_gaussians.get_values()
+                points, colors, rots, scales, z_values, trackable_filter, _, _ = self.shared_new_gaussians.get_values()
                 
                 # Add new gaussians to map gaussians
                 self.gaussians.add_from_pcd2_tensor(points, colors, rots, scales, z_values, trackable_filter)
 
                 # Allocate new target points to shared memory
-                target_points, target_rots, target_scales  = self.gaussians.get_trackable_gaussians_tensor(self.trackable_opacity_th)
-                self.shared_target_gaussians.input_values(target_points, target_rots, target_scales)
+                self.gaussians.update_stability()
+                
+                target_points, target_rots, target_scales, target_colors, target_opacities, target_stability, _ = self.gaussians.get_trackable_gaussians_tensor(self.trackable_opacity_th)
+                self.shared_target_gaussians.input_values(target_points, target_rots, target_scales, target_colors, target_opacities, target_stability)
                 self.target_gaussians_ready[0] = 1
 
                 # Add new keyframe
@@ -181,7 +192,7 @@ class Mapper(SLAMParameters):
 
             elif self.is_mapping_keyframe_shared[0]:
                 # get shared gaussians
-                points, colors, rots, scales, z_values, _ = self.shared_new_gaussians.get_values()
+                points, colors, rots, scales, z_values, _, _, _ = self.shared_new_gaussians.get_values()
                 
                 # Add new gaussians to map gaussians
                 self.gaussians.add_from_pcd2_tensor(points, colors, rots, scales, z_values, [])
@@ -216,6 +227,7 @@ class Mapper(SLAMParameters):
                     gt_depth_image = viewpoint_cam.depth_level_2.cuda()
                 
                 self.training=True
+
                 render_pkg = render_3(viewpoint_cam, self.gaussians, self.pipe, self.background, training_stage=self.training_stage)
                 
                 depth_image = render_pkg["render_depth"]
@@ -224,48 +236,127 @@ class Mapper(SLAMParameters):
                 
                 mask = (gt_depth_image>0.)
                 mask = mask.detach()
-                # color_mask = torch.tile(mask, (3,1,1))
-                gt_image = gt_image * mask
-                
+
+             
                 # Loss
-                Ll1_map, Ll1 = l1_loss(image, gt_image)
-                L_ssim_map, L_ssim = ssim(image, gt_image)
+                Ll1_map, _ = l1_loss(image, gt_image)
+                L_ssim_map, _ = ssim(image, gt_image)
 
                 d_max = 10.
-                Ll1_d_map, Ll1_d = l1_loss(depth_image/d_max, gt_depth_image/d_max)
+                Ll1_d_map, _ = l1_loss(depth_image/d_max, gt_depth_image/d_max)
 
-                loss_rgb = (1.0 - self.lambda_dssim) * Ll1 + self.lambda_dssim * (1.0 - L_ssim)
-                loss_d = Ll1_d
+                # Apply mask to residuals
+                loss_rgb_map = (1.0 - self.lambda_dssim) * Ll1_map + self.lambda_dssim * (1.0 - L_ssim_map)
+                loss_d_map = Ll1_d_map
+                mask_norm = mask.sum().float() + 1e-6
+                loss_rgb = (loss_rgb_map * mask).sum() / mask_norm
+                loss_d = (loss_d_map * mask).sum() / mask_norm 
                 
                 loss = loss_rgb + 0.1*loss_d
                 
                 loss.backward()
+
+                # update stability
+                with torch.no_grad():
+                    # alpha (sensitivity)=250.0, beta (decay)=0.2, gamma (threshold)=0.002
+                    self.gaussians.update_gradient_stability(alpha=250.0, beta=0.2, threshold=0.002)
+
+                with torch.no_grad():
+                    # 1. Get Gaussian Centers
+                    xyz = self.gaussians.get_xyz
+                    
+                    # 2. Transform to Camera Space
+                    R = viewpoint_cam.R
+                    T = viewpoint_cam.t
+                    # R is w2c, T is w2c translation
+                    # xyz_cam = R @ xyz + T
+                    xyz_cam = (R @ xyz.T).T + T
+                    
+                    # 3. Project to Image Plane
+                    z_cam = xyz_cam[:, 2]
+                    valid_z = z_cam > 0.05
+                    
+                    # Project: u = fx * x/z + cx, v = fy * y/z + cy
+                    u = (xyz_cam[:, 0] / (z_cam + 1e-6)) * self.fx + self.cx
+                    v = (xyz_cam[:, 1] / (z_cam + 1e-6)) * self.fy + self.cy
+                    
+                    u_idx = u.long()
+                    v_idx = v.long()
+                    
+                    # Bounds check
+                    # gt_depth_image shape is usually (H, W) or (1, H, W)
+                    if len(gt_depth_image.shape) == 3:
+                        H_map, W_map = gt_depth_image.shape[1], gt_depth_image.shape[2]
+                        gt_depth_map = gt_depth_image[0]
+                    else:
+                        H_map, W_map = gt_depth_image.shape[0], gt_depth_image.shape[1]
+                        gt_depth_map = gt_depth_image
+
+                    valid_coords = (u_idx >= 0) & (u_idx < W_map) & (v_idx >= 0) & (v_idx < H_map) & valid_z
+                    
+                    # Get indices of valid Gaussians to check
+                    valid_indices = torch.nonzero(valid_coords).squeeze()
+                    
+                    if valid_indices.numel() > 0:
+                        # Sample GT depths
+                        gt_z = gt_depth_map[v_idx[valid_indices], u_idx[valid_indices]]
+                        
+                        # Get Gaussian depths
+                        gauss_z = z_cam[valid_indices]
+                        
+                        # 5. The Check: Is Gaussian closer than GT Depth?
+                        margin = 0.20 # 20cm margin
+                        
+                        # Floater condition: Valid GT measurement AND Gaussian is significantly closer
+                        is_floater = (gt_z > 0) & (gauss_z < (gt_z - margin))
+                        
+                        # Get indices of floaters
+                        floater_indices = valid_indices[is_floater]
+                        
+                        # 6. Zero out Gradients
+                        if floater_indices.numel() > 0:
+                            if self.gaussians._xyz.grad is not None:
+                                self.gaussians._xyz.grad[floater_indices] = 0.
+                            if self.gaussians._features_dc.grad is not None:
+                                self.gaussians._features_dc.grad[floater_indices] = 0.
+                            if self.gaussians._features_rest.grad is not None:
+                                self.gaussians._features_rest.grad[floater_indices] = 0.
+                            if self.gaussians._opacity.grad is not None:
+                                self.gaussians._opacity.grad[floater_indices] = 0.
+                            if self.gaussians._scaling.grad is not None:
+                                self.gaussians._scaling.grad[floater_indices] = 0.
+                            if self.gaussians._rotation.grad is not None:
+                                self.gaussians._rotation.grad[floater_indices] = 0.
+
                 with torch.no_grad():
                     if self.train_iter % 200 == 0:  # 200
-                        self.gaussians.prune_large_and_transparent(0.005, self.prune_th)
-                    
+                        self.gaussians.prune_large_and_transparent(0.005, self.prune_th/10.)
+                        self.gaussians.prune_large_low_opacity(0.05, 0.5)
+                        self.gaussians.prune_screen_space_bullies(viewpoint_cam, thresh=0.3)
+
                     self.gaussians.optimizer.step()
                     self.gaussians.optimizer.zero_grad(set_to_none = True)
                     
-                    if new_keyframe and self.rerun_viewer:
-                        current_i = copy.deepcopy(self.iter_shared[0])
-                        rgb_np = image.cpu().numpy().transpose(1,2,0)
-                        rgb_np = np.clip(rgb_np, 0., 1.0) * 255
-                        # rr.set_time_sequence("step", current_i)
-                        rr.set_time_seconds("log_time", time.time() - self.total_start_time_viewer)
-                        rr.log("rendered_rgb", rr.Image(rgb_np))
+                    if new_keyframe:
+                        if self.rerun_viewer:
+                            current_i = copy.deepcopy(self.iter_shared[0])
+                            rgb_np = image.cpu().numpy().transpose(1,2,0)
+                            rgb_np = np.clip(rgb_np, 0., 1.0) * 255
+                            rr.set_time("log_time", duration=time.time() - self.total_start_time_viewer)
+                            rr.log("rendered_rgb", rr.Image(rgb_np))
+
+
                         new_keyframe = False
                         
                 self.training = False
                 self.train_iter += 1
                 # torch.cuda.empty_cache()
-        if self.verbose:
-            while True:
-                self.run_viewer(False)
-        
+
         # End of data
+
         if self.save_results and not self.rerun_viewer:
             self.gaussians.save_ply(os.path.join(self.output_path, "scene.ply"))
+
         
         self.calc_2d_metric()
     
@@ -328,7 +419,7 @@ class Mapper(SLAMParameters):
                 depth_paths.append(f"{self.dataset_path}/depth_images/{depth_image_name}.png")
                 
             return color_paths, depth_paths
-        elif self.trajmanager.which_dataset == "tum":
+        elif self.trajmanager.which_dataset == "tum" or self.trajmanager.which_dataset == "bonn": 
             return self.trajmanager.color_paths, self.trajmanager.depth_paths
 
     
@@ -342,6 +433,43 @@ class Mapper(SLAMParameters):
         image_names, depth_image_names = self.get_image_dirs(self.dataset_path)
         final_poses = self.final_pose
         fig, axs = plt.subplots(1, 2, figsize=(10, 5))
+        
+        # --- Trajectory plot setup ---
+        gt_poses_np = np.array(self.trajmanager.gt_poses)  # (N, 4, 4) c2w
+        est_poses_np = final_poses.cpu().numpy()           # (M, 4, 4) c2w
+        valid_mask_est = np.abs(est_poses_np[:, 3, 3]) > 0.001
+        est_poses_np = est_poses_np[valid_mask_est]
+        
+        # Synchronise lengths, then align via Umeyama
+        n_sync = min(len(gt_poses_np), len(est_poses_np))
+        gt_sync  = gt_poses_np[:n_sync]
+        est_sync = est_poses_np[:n_sync]
+        gt_xyz   = gt_sync[:, :3, 3]
+        est_xyz  = est_sync[:, :3, 3]
+        
+        # Umeyama alignment (est → gt)
+        def umeyama_align(src, dst):
+            """Return aligned src (scale * R @ src.T + t)."""
+            n = src.shape[0]
+            mu_src = src.mean(axis=0)
+            mu_dst = dst.mean(axis=0)
+            src_c = src - mu_src
+            dst_c = dst - mu_dst
+            sigma = np.dot(dst_c.T, src_c) / n
+            U, d, Vt = np.linalg.svd(sigma)
+            det_sign = np.linalg.det(np.dot(U, Vt))
+            S = np.diag([1, 1, det_sign])
+            R_align = np.dot(U, np.dot(S, Vt))
+            var_src = (src_c ** 2).sum() / n
+            c_align = (d * np.diag(S)).sum() / var_src if var_src > 1e-10 else 1.0
+            t_align = mu_dst - c_align * np.dot(R_align, mu_src)
+            aligned = (c_align * np.dot(R_align, src.T)).T + t_align
+            return aligned
+        
+        try:
+            est_aligned = umeyama_align(est_xyz, gt_xyz)
+        except Exception:
+            est_aligned = est_xyz  # fallback: no alignment
         
         with torch.no_grad():
             for i in tqdm(range(len(image_names))):
@@ -400,16 +528,15 @@ class Mapper(SLAMParameters):
                 if self.save_results and ((i+1)%100==0 or i==len(image_names)-1):
                     ours_rgb = np.asarray(ours_rgb_.detach().cpu()).squeeze().transpose((1,2,0))
                     
-                    axs[0].set_title("gt rgb")
-                    axs[0].imshow(gt_rgb)
-                    axs[0].axis("off")
-                    axs[1].set_title("rendered rgb")
-                    axs[1].imshow(ours_rgb)
-                    axs[1].axis("off")
-                    plt.suptitle(f'{i+1} frame')
-                    plt.pause(1e-15)
-                    plt.savefig(f"{self.output_path}/result_{i}.png")
-                    plt.cla()
+                    # Save GT and Render separately
+                    gt_rgb_uint8 = (gt_rgb * 255).astype(np.uint8)
+                    ours_rgb_uint8 = (ours_rgb * 255).astype(np.uint8)
+                    
+                    gt_bgr = cv2.cvtColor(gt_rgb_uint8, cv2.COLOR_RGB2BGR)
+                    ours_bgr = cv2.cvtColor(ours_rgb_uint8, cv2.COLOR_RGB2BGR)
+                    
+                    cv2.imwrite(f"{self.output_path}/gt_{i}.png", gt_bgr)
+                    cv2.imwrite(f"{self.output_path}/render_{i}.png", ours_bgr)
                 
                 torch.cuda.empty_cache()
             
@@ -418,6 +545,31 @@ class Mapper(SLAMParameters):
             lpips = np.array(lpips)
             
             print(f"PSNR: {psnrs.mean():.2f}\nSSIM: {ssims.mean():.3f}\nLPIPS: {lpips.mean():.3f}")
+            print(f"PSNR STD: {psnrs.std():.2f}\nSSIM STD: {ssims.std():.3f}\nLPIPS STD: {lpips.std():.3f}")
+            
+            # --- Save trajectory alignment plot ---
+            try:
+                for ax, (xi, yi, xlabel, ylabel) in zip(
+                    axs,
+                    [(0, 2, "x [m]", "z [m]"), (0, 1, "x [m]", "y [m]")]
+                ):
+                    ax.plot(gt_xyz[:n_sync, xi], gt_xyz[:n_sync, yi],
+                            color="black", linewidth=1.5, label="GT")
+                    ax.plot(est_aligned[:, xi], est_aligned[:, yi],
+                            color="tab:blue", linewidth=1.5, label="Ours")
+                    ax.set_xlabel(xlabel)
+                    ax.set_ylabel(ylabel)
+                    ax.grid(True)
+                    ax.legend()
+                fig.tight_layout()
+                traj_out = os.path.join(self.output_path, "final_scene_trajectory.png")
+                fig.savefig(traj_out, dpi=150)
+                plt.close(fig)
+                print(f"Saved trajectory plot to {traj_out}")
+            except Exception as e:
+                print(f"Error saving trajectory plot: {e}")
+                import traceback; traceback.print_exc()
+                plt.close(fig)
 
 def mse2psnr(x):
     return -10.*torch.log(x)/torch.log(torch.tensor(10.))

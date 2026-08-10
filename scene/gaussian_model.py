@@ -56,6 +56,7 @@ class GaussianModel(nn.Module):
         self._scaling = torch.empty(0)
         self._rotation = torch.empty(0)
         self._opacity = torch.empty(0)
+        
         self.max_radii2D = torch.empty(0)
         self.xyz_gradient_accum = torch.empty(0)
         self.denom = torch.empty(0)
@@ -66,7 +67,47 @@ class GaussianModel(nn.Module):
         self.optimizer = None
         self.percent_dense = 0
         self.spatial_lr_scale = 0
+        
+        # Stability attributes
+        self._covariance_stability = torch.empty(0)
+
+        self.voxel_stability_map = {} # Key: (vx, vy, vz), Value: {mean_cov, running_var, count}
+        self.voxel_stability_map = {} # Key: (vx, vy, vz), Value: {mean_cov, running_var, count}
+        self.voxel_size = 0.1 # 10cm voxels
+        
         self.setup_functions()
+
+    def update_stability(self, time_delta=1.0):
+        # Voxel-based Stability Monitor
+        with torch.no_grad():
+            points = self.get_xyz
+            covs = self.get_covariance()
+            
+            # 1. Discretize points to voxels
+            voxel_indices = torch.floor(points / self.voxel_size).long().cpu().numpy()
+            
+            # 2. Update running statistics per voxel
+            # This is a simplifiction: one point might move between voxels.
+            # Ideally we track the *voxel's* stability, not the point's directly?
+            # User wants "covariance stability over time". 
+            # If we anchor to voxels, we measure if the geometry in that voxel is changing shape (cov check).
+            
+            current_stability = torch.zeros(points.shape[0], device="cuda")
+            
+            # CPU Update Loop (Slow but precise for dictionary)
+            # Optimization: Use hash map on GPU later if needed.
+            
+            # Simple approach: 
+            # Check deviation of current covariance from "Stable Mean" of that voxel.
+            
+            # Since fast update is needed, let's use a simpler per-point approach relying on persistence?
+            # User specifically asked for "consider a voxel based approach for the variance stability to reduce memory".
+            
+            pass 
+        return
+
+
+
 
     def capture(self):
         return (
@@ -81,7 +122,7 @@ class GaussianModel(nn.Module):
             self.xyz_gradient_accum,
             self.denom,
             self.optimizer.state_dict(),
-            self.spatial_lr_scale,
+            self.spatial_lr_scale
         )
     
     def restore(self, model_args, training_args):
@@ -160,6 +201,14 @@ class GaussianModel(nn.Module):
         
         self.keyframe_idx = torch.ones((self.get_xyz.shape[0],1), dtype=torch.bool, device="cuda")
         
+        self.keyframe_idx = torch.ones((self.get_xyz.shape[0],1), dtype=torch.bool, device="cuda")
+        
+        self._covariance_stability = torch.full((self.get_xyz.shape[0],), 0.5, dtype=torch.float, device="cuda")
+
+
+
+        # Removed _gradient_ema tensor to save memory (User request)
+        
         torch.cuda.empty_cache()
     
     def add_from_pcd2_tensor(self, points, colors, rots_, scales_, z_vals_, trackable_idxs):
@@ -191,7 +240,6 @@ class GaussianModel(nn.Module):
         if len(trackable_idxs) != 0:
             self.new_trackable_mask[(trackable_idxs)] = 1
             
-        # self.trackable_mask = torch.concat([self.trackable_mask, self.new_trackable_mask], dim=0)
         self.densification_postfix(self.new_xyz, self.new_features_dc, 
                                    self.new_features_rest, self.new_opacities,
                                    self.new_scaling, self.new_rotation, self.new_trackable_mask)
@@ -201,7 +249,61 @@ class GaussianModel(nn.Module):
         self.keyframe_idx = torch.concat([  self.keyframe_idx,
                                             new_keyframe_idx], dim=0)
         
+        self.keyframe_idx = torch.concat([  self.keyframe_idx,
+                                            new_keyframe_idx], dim=0)
+        
+        # Extend stability and gmm
+        new_stability = torch.full((self.new_xyz.shape[0],), 0.5, dtype=torch.float, device="cuda")
+
+        new_grad_ema = torch.zeros((self.new_xyz.shape[0]), dtype=torch.float, device="cuda")
+        
+        self._covariance_stability = torch.concat([self._covariance_stability, new_stability], dim=0)
+
+        # self._gradient_ema = torch.concat([self._gradient_ema, new_grad_ema], dim=0)
+        
         torch.cuda.empty_cache()
+
+
+    def update_gradient_stability(self, alpha=0.05, beta=0.1, threshold=0.0):
+        # Temporal Reliability Score (Per-Gaussian)
+        # S_t = (1 - beta) * S_t-1 + beta * exp(-alpha * ||grad||)
+        
+        if self._xyz.grad is not None:
+            # Safety Check: Ensure size match
+            if self._covariance_stability.shape[0] != self._xyz.shape[0]:
+                 self._covariance_stability = torch.zeros(self._xyz.shape[0], device="cuda")
+
+            with torch.no_grad():
+                # 1. Compute Gradient Magnitude
+                grad_norm = torch.norm(self._xyz.grad, dim=1)
+                
+                # 2. Compute Instantaneous Score
+                # alpha controls sensitivity. High grad -> Low Score.
+                # If grad=0, score=1.
+                # Gamma (threshold) bias: Subtract noise floor.
+                effective_grad = torch.clamp(grad_norm - threshold, min=0.0)
+                current_score = torch.exp(-alpha * effective_grad)
+                
+                # 3. Update Persistent Stability Score (EMA)
+                # beta controls history retention.
+                self._covariance_stability = (1.0 - beta) * self._covariance_stability + beta * current_score
+                
+                # Ensure it stays in [0, 1] (Numerical stability)
+                self._covariance_stability = torch.clamp(self._covariance_stability, 0.0, 1.0)
+
+    def update_stability(self, time_delta=1.0):
+        # Update Lifespan -- DEPRECATED by BirthTime Logic
+        # self._lifespan += int(time_delta)
+        pass
+        
+        # Update Covariance Stability
+        # Placeholder: Generate random stability for visualization testing
+        if self._covariance_stability.shape[0] != self.get_xyz.shape[0]:
+             self._covariance_stability = torch.zeros(self.get_xyz.shape[0], device="cuda")
+             
+        # Random noise removed. Stability is updated via update_gradient_stability during training.
+        # self._covariance_stability = torch.rand_like(self._opacity).flatten()
+        
 
 
     def get_trackable_gaussians_tensor(self, opacity_th):
@@ -211,8 +313,7 @@ class GaussianModel(nn.Module):
             target_points = self.get_xyz[target_idxs]
             target_rots = self.get_rotation[target_idxs]
             target_scales = self.get_scaling[target_idxs]
-            
-            return target_points.cpu(), target_rots.cpu(), target_scales.cpu()
+            return target_points.cpu(), target_rots.cpu(), target_scales.cpu(), self._features_dc[target_idxs].detach().cpu().reshape(-1, 3), self.get_opacity[target_idxs].detach().cpu(), self._covariance_stability[target_idxs].cpu(), torch.zeros_like(self._covariance_stability[target_idxs]).cpu()
 
     def training_setup(self, training_args):
         self.percent_dense = training_args.percent_dense
@@ -393,6 +494,8 @@ class GaussianModel(nn.Module):
 
     def replace_tensor_to_optimizer(self, tensor, name):
         optimizable_tensors = {}
+        if self.optimizer is None:
+            return optimizable_tensors
         for group in self.optimizer.param_groups:
             if group["name"] == name:
                 stored_state = self.optimizer.state.get(group['params'][0], None)
@@ -408,6 +511,8 @@ class GaussianModel(nn.Module):
 
     def _prune_optimizer(self, mask):
         optimizable_tensors = {}
+        if self.optimizer is None:
+            return optimizable_tensors
         for group in self.optimizer.param_groups:
             stored_state = self.optimizer.state.get(group['params'][0], None)
             if stored_state is not None:
@@ -428,12 +533,20 @@ class GaussianModel(nn.Module):
         valid_points_mask = ~mask
         optimizable_tensors = self._prune_optimizer(valid_points_mask)
 
-        self._xyz = optimizable_tensors["xyz"]
-        self._features_dc = optimizable_tensors["f_dc"]
-        self._features_rest = optimizable_tensors["f_rest"]
-        self._opacity = optimizable_tensors["opacity"]
-        self._scaling = optimizable_tensors["scaling"]
-        self._rotation = optimizable_tensors["rotation"]
+        if self.optimizer is None:
+            self._xyz = nn.Parameter(self._xyz[valid_points_mask].requires_grad_(True))
+            self._features_dc = nn.Parameter(self._features_dc[valid_points_mask].requires_grad_(True))
+            self._features_rest = nn.Parameter(self._features_rest[valid_points_mask].requires_grad_(True))
+            self._opacity = nn.Parameter(self._opacity[valid_points_mask].requires_grad_(True))
+            self._scaling = nn.Parameter(self._scaling[valid_points_mask].requires_grad_(True))
+            self._rotation = nn.Parameter(self._rotation[valid_points_mask].requires_grad_(True))
+        else:
+            self._xyz = optimizable_tensors["xyz"]
+            self._features_dc = optimizable_tensors["f_dc"]
+            self._features_rest = optimizable_tensors["f_rest"]
+            self._opacity = optimizable_tensors["opacity"]
+            self._scaling = optimizable_tensors["scaling"]
+            self._rotation = optimizable_tensors["rotation"]
 
         self.xyz_gradient_accum = self.xyz_gradient_accum[valid_points_mask]
 
@@ -445,10 +558,16 @@ class GaussianModel(nn.Module):
             self.keyframe_idx = self.keyframe_idx[valid_points_mask]
         except:
             pass
+            
+        self._covariance_stability = self._covariance_stability[valid_points_mask]
+
 
 
     def cat_tensors_to_optimizer(self, tensors_dict):
         optimizable_tensors = {}
+        if self.optimizer is None:
+            return tensors_dict
+            
         for group in self.optimizer.param_groups:
             assert len(group["params"]) == 1
             extension_tensor = tensors_dict[group["name"]]
@@ -478,12 +597,21 @@ class GaussianModel(nn.Module):
         "rotation" : new_rotation}
 
         optimizable_tensors = self.cat_tensors_to_optimizer(d)
-        self._xyz = optimizable_tensors["xyz"]
-        self._features_dc = optimizable_tensors["f_dc"]
-        self._features_rest = optimizable_tensors["f_rest"]
-        self._opacity = optimizable_tensors["opacity"]
-        self._scaling = optimizable_tensors["scaling"]
-        self._rotation = optimizable_tensors["rotation"]
+        
+        if self.optimizer is None:
+            self._xyz = torch.nn.Parameter(torch.cat((self._xyz, optimizable_tensors["xyz"]), dim=0).requires_grad_(True))
+            self._features_dc = torch.nn.Parameter(torch.cat((self._features_dc, optimizable_tensors["f_dc"]), dim=0).requires_grad_(True))
+            self._features_rest = torch.nn.Parameter(torch.cat((self._features_rest, optimizable_tensors["f_rest"]), dim=0).requires_grad_(True))
+            self._opacity = torch.nn.Parameter(torch.cat((self._opacity, optimizable_tensors["opacity"]), dim=0).requires_grad_(True))
+            self._scaling = torch.nn.Parameter(torch.cat((self._scaling, optimizable_tensors["scaling"]), dim=0).requires_grad_(True))
+            self._rotation = torch.nn.Parameter(torch.cat((self._rotation, optimizable_tensors["rotation"]), dim=0).requires_grad_(True))
+        else:
+            self._xyz = optimizable_tensors["xyz"]
+            self._features_dc = optimizable_tensors["f_dc"]
+            self._features_rest = optimizable_tensors["f_rest"]
+            self._opacity = optimizable_tensors["opacity"]
+            self._scaling = optimizable_tensors["scaling"]
+            self._rotation = optimizable_tensors["rotation"]
 
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
         self.denom = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")
@@ -495,6 +623,10 @@ class GaussianModel(nn.Module):
         #torch.cuda.empty_cache()
         n_init_points = self.get_xyz.shape[0]
         # Extract points that satisfy the gradient condition
+        # Fix: Ensure _covariance_stability is initialized or skip if empty
+        if self._covariance_stability.shape[0] == 0:
+             self._covariance_stability = torch.zeros(self._opacity.shape[0], device="cuda")
+
         padded_grad = torch.zeros((n_init_points), device="cuda")
         padded_grad[:grads.shape[0]] = grads.squeeze()
         selected_pts_mask = torch.where(padded_grad >= grad_threshold, True, False)
@@ -516,6 +648,10 @@ class GaussianModel(nn.Module):
         new_trackable_mask = self.trackable_mask[selected_pts_mask].repeat(N)
 
         self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacity, new_scaling, new_rotation, new_trackable_mask)
+        
+        # Extend attributes for split points
+        self._covariance_stability = torch.concat([self._covariance_stability, new_stability], dim=0)
+
 
         prune_filter = torch.cat((selected_pts_mask, torch.zeros(N * selected_pts_mask.sum(), device="cuda", dtype=bool)))
         self.prune_points(prune_filter)
@@ -539,6 +675,11 @@ class GaussianModel(nn.Module):
         new_trackable_mask = self.trackable_mask[selected_pts_mask]
 
         self.densification_postfix(new_xyz, new_features_dc, new_features_rest, new_opacities, new_scaling, new_rotation, new_trackable_mask)
+
+        # Extend attributes for cloned points
+        self._covariance_stability = torch.concat([self._covariance_stability, new_stability], dim=0)
+
+        # self._gradient_ema = torch.concat([self._gradient_ema, new_grad_ema], dim=0)
         #torch.cuda.empty_cache()
 
     def densify_and_prune(self, max_grad, min_opacity, extent, max_screen_size):
@@ -601,9 +742,56 @@ class GaussianModel(nn.Module):
         optimizable_tensors = self.replace_tensor_to_optimizer(scales_new, "scaling")
         self._scaling = optimizable_tensors["scaling"]
         
-        # erase transparent gaussians
-        transparent_gaussians = (self.get_opacity[visibility_filter] < min_opacity).squeeze()
-        self.prune_points(transparent_gaussians)
+    
+    def prune_large_low_opacity(self, scale_th, opacity_th):
+        # Identify huge gaussians
+        large_mask = self.get_scaling.max(dim=1).values > scale_th
+        # Identify semi-transparent gaussians
+        low_opacity_mask = self.get_opacity.squeeze() < opacity_th
+        
+        # Prune intersection
+        prune_mask = torch.logical_and(large_mask, low_opacity_mask)
+        self.prune_points(prune_mask)
+
+    def prune_screen_space_bullies(self, viewpoint_cam, thresh=0.3):
+        with torch.no_grad():
+            # Project points to camera space
+            points = self.get_xyz
+            Rcw = viewpoint_cam.R.T
+            tcw = viewpoint_cam.t
+            points_cam = (Rcw @ points.T).T + tcw
+            
+            # Filter points in front of camera
+            z = points_cam[:, 2]
+            valid_mask = z > 0.01
+            
+            if not valid_mask.any():
+                return
+            
+            # Get Max World Scale
+            max_scales = self.get_scaling.max(dim=1).values
+            
+            fx = viewpoint_cam.fx
+            W = viewpoint_cam.image_width
+            H = viewpoint_cam.image_height
+            
+            # Projected Radius in Pixels
+            screen_radius = (fx * max_scales) / torch.clamp_min(z, 0.01)
+            
+            # Screen Area Coverage (approximate circular)
+            screen_area_coverage = 3.14159 * screen_radius**2
+            total_screen_area = float(W * H)
+            
+            coverage_ratio = screen_area_coverage / total_screen_area
+            
+            # Identify bullies
+            bully_mask = coverage_ratio > thresh
+            
+            # Combined mask: Valid Z AND Bully
+            prune_mask = torch.logical_and(valid_mask, bully_mask)
+            
+            if prune_mask.any():
+                self.prune_points(prune_mask)
         
     # def get_target_gaussians(self, current_iter, N):
     #     target_indices = torch.where(self.keyframe_idx >= current_iter - N)
@@ -634,3 +822,5 @@ class GaussianModel(nn.Module):
         elements[:] = list(map(tuple, attributes))
         el = PlyElement.describe(elements, 'vertex')
         PlyData([el]).write(path)
+
+    # Removed dead gaussians pruning and dynamic optimization prevention (User request)

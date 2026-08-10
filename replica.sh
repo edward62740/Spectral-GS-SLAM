@@ -1,5 +1,5 @@
-OUTPUT_PATH="experiments/results"
-DATASET_PATH="dataset/Replica"
+OUTPUT_PATH="${OUTPUT_PATH:-experiments/results}"
+DATASET_PATH="${DATASET_PATH:?set DATASET_PATH to the directory containing room0/, office0/, ...}"
 
 str_pad() {
 
@@ -53,7 +53,7 @@ run_()
     local downsample_rate=${10}
     
     echo "run $dataset"
-    python -W ignore gs_icp_slam.py --dataset_path $DATASET_PATH/$dataset\
+    python -W ignore gs_icp_slam.py   --dataset_path $DATASET_PATH/$dataset\
                                     --config $config\
                                     --output_path $OUTPUT_PATH/$dataset/results\
                                     --keyframe_th $keyframe_th\
@@ -63,7 +63,8 @@ run_()
                                     --trackable_opacity_th $trackable_opacity_th\
                                     --overlapped_th2 $overlapped_th2\
                                     --downsample_rate $downsample_rate\
-                                    --save_results
+                                    --save_results \
+                                    --use_fusion
     wait
 }
 
@@ -94,9 +95,9 @@ run_replica()
     local overlapped_th2=$7
     local downsample_rate=$8
 
-    run_ "room0" "configs/Replica/caminfo.txt" $result_txt $keyframe_th $knn_maxd $overlapped_th $max_correspondence_distance $trackable_opacity_th $overlapped_th2 $downsample_rate
-    run_ "room1" "configs/Replica/caminfo.txt" $result_txt $keyframe_th $knn_maxd $overlapped_th $max_correspondence_distance $trackable_opacity_th $overlapped_th2 $downsample_rate
-    run_ "room2" "configs/Replica/caminfo.txt" $result_txt $keyframe_th $knn_maxd $overlapped_th $max_correspondence_distance $trackable_opacity_th $overlapped_th2 $downsample_rate
+    #run_ "room0" "configs/Replica/caminfo.txt" $result_txt $keyframe_th $knn_maxd $overlapped_th $max_correspondence_distance $trackable_opacity_th $overlapped_th2 $downsample_rate
+    #run_ "room1" "configs/Replica/caminfo.txt" $result_txt $keyframe_th $knn_maxd $overlapped_th $max_correspondence_distance $trackable_opacity_th $overlapped_th2 $downsample_rate
+    #run_ "room2" "configs/Replica/caminfo.txt" $result_txt $keyframe_th $knn_maxd $overlapped_th $max_correspondence_distance $trackable_opacity_th $overlapped_th2 $downsample_rate
     run_ "office0" "configs/Replica/caminfo.txt" $result_txt $keyframe_th $knn_maxd $overlapped_th $max_correspondence_distance $trackable_opacity_th $overlapped_th2 $downsample_rate
     run_ "office1" "configs/Replica/caminfo.txt" $result_txt $keyframe_th $knn_maxd $overlapped_th $max_correspondence_distance $trackable_opacity_th $overlapped_th2 $downsample_rate
     run_ "office2" "configs/Replica/caminfo.txt" $result_txt $keyframe_th $knn_maxd $overlapped_th $max_correspondence_distance $trackable_opacity_th $overlapped_th2 $downsample_rate
