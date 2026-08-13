@@ -34,6 +34,11 @@ from gaussian_renderer import render
 # condition number threshold for degeneracy detection (tau_deg)
 _T_DEG = 200.0
 
+# choose the gaussians the planarity ratio is calculated on
+# obs = observation gaussians from kNN spawn, map = in-view map gaussians
+# obs is more responsive and usually better
+_PLANARITY_SOURCE = "obs"
+
 # fall back to orb prior when gicp converges but disagrees with it
 # debug only; dont enable
 _STRESS_PRIOR = False
@@ -391,6 +396,26 @@ class Tracker(SLAMParameters):
 
                 current_pose = self.reg.align(initial_pose) # ICP align
 
+                # eta from the source covariances, i.e. this frame's depth image only.
+                # read after align() since set_input_source clears them and they are
+                # refilled in computeTransformation. E[nn^T] rather than the centred
+                # covariance: the minor axis is axial, so its sign is an artefact of the
+                # eigensolver and the sample mean is not a meaningful centre. installed
+                # for the next frame; align() computes these covariances anyway.
+                if _PLANARITY_SOURCE == "obs":
+                    try:
+                        src_rots = np.asarray(self.reg.get_source_rotationsq()).reshape(-1, 4)
+                        src_scales = np.asarray(self.reg.get_source_scales()).reshape(-1, 3)
+                        if len(src_rots) >= 300 and len(src_rots) == len(src_scales):
+                            src_R = Rotation.from_quat(src_rots).as_matrix()
+                            minor = np.argmin(src_scales, axis=1)
+                            obs_normals = src_R[np.arange(len(minor)), :, minor]
+                            M_cam = (obs_normals.T @ obs_normals) / len(obs_normals)
+                            R_wc = self.poses[-1][:3, :3]
+                            self.reg.set_normal_covariance((R_wc @ M_cam @ R_wc.T).astype(np.float32))
+                    except Exception:
+                        pass
+
                 # debug
                 try:
                     eigenvals = self.reg.get_last_eigenvalues() # to vis degen conds
@@ -670,7 +695,9 @@ class Tracker(SLAMParameters):
                     n_diff = normals - mean_n
                     Cn = (n_diff.T @ n_diff) / len(normals)
                     
-                    self.reg.set_normal_covariance(Cn.astype(np.float32))
+                    # Cn is still built above: the planarity plot reads it
+                    if _PLANARITY_SOURCE == "map":
+                        self.reg.set_normal_covariance(Cn.astype(np.float32))
                     
                     # planarity score
                     if len(normals) > 0:

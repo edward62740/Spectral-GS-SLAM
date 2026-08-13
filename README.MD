@@ -67,9 +67,12 @@ or simply run the shell scripts (e.g., `tum.sh`) with the relevant sequences unc
 `--use_fusion` enables our method.
 Add `--rerun_viewer` for live visualization. You may have some issues with the rerun version, in which case those sections can be removed if visualization is not needed.
 
+The detection threshold and Gaussian set selection for the planarity score can be found in the tracker. In general, for larger maps, especially in corridors or maps with perpendicular walls, it's recommended to use the `obs` mode.
+
 ## Future work
 - [x] Release initial version with prior
-- [ ] Release final version
+- [x] Apply v1.4 fix and src cov scoring
+- [ ] Release final version tuned on real-world tests
 - [ ] Real-world demo and ToF recordings
 
 

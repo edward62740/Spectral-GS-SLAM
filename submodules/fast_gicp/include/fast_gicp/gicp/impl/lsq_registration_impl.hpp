@@ -1,3 +1,4 @@
+#include <Eigen/Eigenvalues>
 #include <fast_gicp/gicp/lsq_registration.hpp>
 
 #include <boost/format.hpp>
